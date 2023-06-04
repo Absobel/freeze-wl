@@ -1,36 +1,77 @@
+use std::os::fd::AsRawFd;
+
 use wayland_client::{
-    protocol::{wl_buffer, wl_compositor, wl_output, wl_registry, wl_shm, wl_shm_pool, wl_surface},
+    protocol::{wl_buffer::{self, WlBuffer}, wl_compositor, wl_output, wl_registry, wl_shm, wl_shm_pool, wl_surface},
     Connection, Dispatch, QueueHandle, WEnum,
 };
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
     zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
 };
+use memmap2::MmapMut;
+
+#[derive(Debug)]
+struct BufferData {
+    format: wl_shm::Format,
+    width: u32,
+    height: u32,
+    stride: u32,
+}
+
+impl BufferData {
+    fn new(format: wl_shm::Format, width: u32, height: u32, stride: u32) -> Self {
+        Self {
+            format,
+            width,
+            height,
+            stride,
+        }
+    }
+
+    fn size(&self) -> i32 {
+        self.stride as i32 * self.height as i32
+    }
+
+    fn buffer(&self, shm_pool: &wl_shm_pool::WlShmPool, qh: &QueueHandle<AppData>) -> WlBuffer {
+        shm_pool.create_buffer(
+            0,
+            self.width as i32,
+            self.height as i32,
+            self.stride as i32,
+            self.format,
+            qh,
+            (),
+        )
+        
+    }
+}
 
 #[derive(Debug)]
 struct AppData {
     screencpy_manager: Option<ZwlrScreencopyManagerV1>,
     output: Option<wl_output::WlOutput>,
     compositor: Option<wl_compositor::WlCompositor>,
-    buffer: Option<wl_buffer::WlBuffer>,
     shm: Option<wl_shm::WlShm>,
-}
 
+    buffer_data: Option<BufferData>,
+}
 impl AppData {
     fn new() -> Self {
         Self {
             screencpy_manager: None,
             output: None,
             compositor: None,
-            buffer: None,
             shm: None,
+
+            buffer_data: None,
         }
     }
 
     fn is_ready(&self) -> bool {
-        self.screencpy_manager.is_some() && self.output.is_some() && self.compositor.is_some()
-        //&& self.buffer.is_some()     // TODO
-        //&& self.shm.is_some()        // TODO
+        self.screencpy_manager.is_some()
+            && self.output.is_some()
+            && self.compositor.is_some()
+            && self.shm.is_some()
     }
 }
 
@@ -81,7 +122,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for AppData {
 
 impl Dispatch<ZwlrScreencopyFrameV1, ()> for AppData {
     fn event(
-        _state: &mut Self,
+        state: &mut Self,
         _: &ZwlrScreencopyFrameV1,
         event: zwlr_screencopy_frame_v1::Event,
         _: &(),
@@ -97,8 +138,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for AppData {
                 height,
                 stride,
             } => {
-                println!("Got buffer: "); // DEBUG
-                dbg!(event);
+                state.buffer_data = Some(BufferData::new(format.into_result().unwrap(), width, height, stride));
             }
             _ => {}
         }
@@ -157,6 +197,32 @@ impl Dispatch<wl_shm::WlShm, ()> for AppData {
     }
 }
 
+impl Dispatch<wl_shm_pool::WlShmPool, ()> for AppData {
+    fn event(
+        _state: &mut Self,
+        _: &wl_shm_pool::WlShmPool,
+        event: wl_shm_pool::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<AppData>,
+    ) {
+        println!("Got shm pool: {:?}", event); // DEBUG
+    }
+}
+
+impl Dispatch<wl_buffer::WlBuffer, ()> for AppData {
+    fn event(
+        _state: &mut Self,
+        _: &wl_buffer::WlBuffer,
+        event: wl_buffer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<AppData>,
+    ) {
+        println!("Got buffer: {:?}", event); // DEBUG
+    }
+}
+
 // The main function of our program
 fn main() {
     let mut state = AppData::new();
@@ -170,10 +236,7 @@ fn main() {
 
     let tmp_file = tempfile::tempfile().unwrap();
 
-    //println!("Advertized globals:");  // DEBUG
-
-    event_queue.roundtrip(&mut state).unwrap();
-    println!();
+    event_queue.roundtrip(&mut state).unwrap();  // So that the state is ready
 
     if state.is_ready() {
         let frame = state.screencpy_manager.as_ref().unwrap().capture_output(
@@ -182,12 +245,35 @@ fn main() {
             &qh,
             (),
         );
+        event_queue.roundtrip(&mut state).unwrap();  // Have to take the events to create bufferdata
+        
+
         let surface = state.compositor.as_ref().unwrap().create_surface(&qh, ());
-        //let shm_pool = state.shm.unwrap().create_pool(tmp_file); // TODO : create pool then create buffer
+                
+        let shm_pool = state.shm.as_ref().unwrap().create_pool(
+            tmp_file.as_raw_fd(),
+            state.buffer_data.as_ref().unwrap().size(),
+            &qh,
+            (),
+        );
+
+        // Map the file into memory
+        let mut mmap = unsafe { MmapMut::map_mut(&tmp_file).unwrap() };
+
+        // Fill the buffer with white pixels
+        let pixel = 0xFFFFFFFFu32;  // white in ARGB8888
+        for i in (0..mmap.len()).step_by(4) {
+            mmap[i..i+4].copy_from_slice(&pixel.to_ne_bytes());
+        }
+
+        let buffer = state.buffer_data.as_ref().unwrap().buffer(&shm_pool, &qh);
+        surface.attach(Some(&buffer), 0, 0);
+
+        event_queue.roundtrip(&mut state).unwrap();
 
         loop {
             // TODO: attach and commit surface
-            //surface.attach(Some(&state.buffer.unwrap()), 0, 0);
+            surface.commit();
 
             event_queue.dispatch_pending(&mut state).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(16));
