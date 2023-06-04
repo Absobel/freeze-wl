@@ -1,6 +1,6 @@
 use wayland_client::{
-    protocol::{wl_buffer, wl_compositor, wl_output, wl_registry, wl_surface},
-    Connection, Dispatch, QueueHandle,
+    protocol::{wl_buffer, wl_compositor, wl_output, wl_registry, wl_shm, wl_shm_pool, wl_surface},
+    Connection, Dispatch, QueueHandle, WEnum,
 };
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
@@ -13,6 +13,7 @@ struct AppData {
     output: Option<wl_output::WlOutput>,
     compositor: Option<wl_compositor::WlCompositor>,
     buffer: Option<wl_buffer::WlBuffer>,
+    shm: Option<wl_shm::WlShm>,
 }
 
 impl AppData {
@@ -22,6 +23,7 @@ impl AppData {
             output: None,
             compositor: None,
             buffer: None,
+            shm: None,
         }
     }
 
@@ -29,7 +31,8 @@ impl AppData {
         self.screencpy_manager.is_some()
             && self.output.is_some()
             && self.compositor.is_some()
-            && self.buffer.is_some()
+            //&& self.buffer.is_some()     // TODO
+            //&& self.shm.is_some()        // TODO
     }
 }
 
@@ -58,6 +61,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppData {
             } else if interface == "wl_compositor" {
                 state.compositor =
                     Some(registry.bind::<wl_compositor::WlCompositor, _, _>(name, version, qh, ()));
+            } else if interface == "wl_shm" {
+                state.shm = Some(registry.bind::<wl_shm::WlShm, _, _>(name, version, qh, ()));
             }
         }
     }
@@ -72,7 +77,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for AppData {
         _: &Connection,
         _: &QueueHandle<AppData>,
     ) {
-        println!("Got screencopy manager: {:?}", event);
+        println!("Got screencopy manager: {:?}", event); // DEBUG
     }
 }
 
@@ -86,6 +91,19 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for AppData {
         _: &QueueHandle<AppData>,
     ) {
         println!("Got screencopy frame: {:?}", event); // DEBUG
+
+        match event {
+            zwlr_screencopy_frame_v1::Event::Buffer {
+                format,
+                width,
+                height,
+                stride,
+            } => {
+                println!("Got buffer: "); // DEBUG
+                dbg!(event);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -98,7 +116,7 @@ impl Dispatch<wl_output::WlOutput, ()> for AppData {
         _: &Connection,
         _: &QueueHandle<AppData>,
     ) {
-        println!("Got output: {:?}", event);
+        println!("Got output: {:?}", event); // DEBUG
     }
 }
 
@@ -111,7 +129,7 @@ impl Dispatch<wl_compositor::WlCompositor, ()> for AppData {
         _: &Connection,
         _: &QueueHandle<AppData>,
     ) {
-        println!("Got compositor: {:?}", event);
+        println!("Got compositor: {:?}", event); // DEBUG
     }
 }
 
@@ -124,7 +142,20 @@ impl Dispatch<wl_surface::WlSurface, ()> for AppData {
         _: &Connection,
         _: &QueueHandle<AppData>,
     ) {
-        println!("Got surface: {:?}", event);
+        println!("Got surface: {:?}", event); // DEBUG
+    }
+}
+
+impl Dispatch<wl_shm::WlShm, ()> for AppData {
+    fn event(
+        _state: &mut Self,
+        _: &wl_shm::WlShm,
+        event: wl_shm::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<AppData>,
+    ) {
+        println!("Got shm: {:?}", event); // DEBUG
     }
 }
 
@@ -139,24 +170,28 @@ fn main() {
 
     let _registry = display.get_registry(&qh, ());
 
-    println!("Advertized globals:");
+    let tmp_file = tempfile::tempfile().unwrap();
+
+    //println!("Advertized globals:");  // DEBUG
 
     event_queue.roundtrip(&mut state).unwrap();
     println!();
 
     if state.is_ready() {
-        //dbg!(state);     TODO: debug
-        state.screencpy_manager.unwrap().capture_output(
-            0,
-            &state.output.unwrap(),
-            &qh,
-            (),
-        );
+        //dbg!(state);     // DEBUG
+        let frame =
+            state
+                .screencpy_manager
+                .unwrap()
+                .capture_output(0, &state.output.unwrap(), &qh, ());
         let surface = state.compositor.unwrap().create_surface(&qh, ());
+        //let shm_pool = state.shm.unwrap().create_pool(tmp_file);
+
         loop {
             // TODO: attach and commit surface
             //surface.attach(Some(&state.buffer.unwrap()), 0, 0);
 
+            event_queue.dispatch_pending(&mut state).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(16));
         }
     } else {
