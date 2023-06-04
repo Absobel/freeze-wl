@@ -28,11 +28,9 @@ impl AppData {
     }
 
     fn is_ready(&self) -> bool {
-        self.screencpy_manager.is_some()
-            && self.output.is_some()
-            && self.compositor.is_some()
-            //&& self.buffer.is_some()     // TODO
-            //&& self.shm.is_some()        // TODO
+        self.screencpy_manager.is_some() && self.output.is_some() && self.compositor.is_some()
+        //&& self.buffer.is_some()     // TODO
+        //&& self.shm.is_some()        // TODO
     }
 }
 
@@ -178,14 +176,14 @@ fn main() {
     println!();
 
     if state.is_ready() {
-        //dbg!(state);     // DEBUG
-        let frame =
-            state
-                .screencpy_manager
-                .unwrap()
-                .capture_output(0, &state.output.unwrap(), &qh, ());
-        let surface = state.compositor.unwrap().create_surface(&qh, ());
-        //let shm_pool = state.shm.unwrap().create_pool(tmp_file);
+        let frame = state.screencpy_manager.as_ref().unwrap().capture_output(
+            0,
+            state.output.as_ref().unwrap(),
+            &qh,
+            (),
+        );
+        let surface = state.compositor.as_ref().unwrap().create_surface(&qh, ());
+        //let shm_pool = state.shm.unwrap().create_pool(tmp_file); // TODO : create pool then create buffer
 
         loop {
             // TODO: attach and commit surface
